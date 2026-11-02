@@ -1,0 +1,77 @@
+name: Koymic release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and publish APKs
+    runs-on: 'ubuntu-26.04'
+    env:
+      SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+      TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v1.0.0-build{0}', github.run_number) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version-file: .github/.java-version
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-disabled: true
+
+      - name: Warn when there is no signing key
+        if: env.SIGNING_KEY == ''
+        run: |
+          echo "::warning::No SIGNING_KEY secret found. The APK will be signed with a throw-away debug key, so it cannot be updated in place by later releases. See docs/SETUP.md."
+
+      - name: Build (signed)
+        if: env.SIGNING_KEY != ''
+        run: |
+          echo "$SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/koymic.keystore"
+          ./gradlew assembleRelease -Pdist=github
+        env:
+          MIHON_GITHUB_RELEASE: true
+          storeFile: ${{ runner.temp }}/koymic.keystore
+          storePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyAlias: ${{ secrets.ALIAS }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Build (debug-signed)
+        if: env.SIGNING_KEY == ''
+        run: ./gradlew assembleRelease -Pdist=github
+
+      - name: Rename APKs
+        run: |
+          set -e
+          cd app/build/outputs/apk/release
+          mv app-universal-release.apk "koymic-${TAG}.apk"
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            mv "app-${abi}-release.apk" "koymic-${abi}-${TAG}.apk"
+          done
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          gh release create "$TAG" app/build/outputs/apk/release/koymic-*.apk \
+            --title "Koymic ${TAG}" \
+            --generate-notes \
+            --target "${GITHUB_SHA}"

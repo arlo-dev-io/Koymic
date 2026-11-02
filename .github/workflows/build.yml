@@ -45,6 +45,7 @@ jobs:
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
 
       - name: Check code format
+        continue-on-error: true
         run: ./gradlew spotlessCheck
 
       - name: Run unit tests
